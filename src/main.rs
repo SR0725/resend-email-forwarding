@@ -156,7 +156,7 @@ fn truncate_url(url: &str) -> String {
     }
 }
 
-/// Truncate text to a max length, appending "…" if needed
+/// Truncate text to a max char length, appending "…" if needed
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -164,6 +164,34 @@ fn truncate(s: &str, max: usize) -> String {
         let t: String = s.chars().take(max - 1).collect();
         format!("{t}…")
     }
+}
+
+/// Truncate a field value to fit Discord's 1024-char limit
+fn truncate_field(s: &str) -> String {
+    truncate(s, 1024)
+}
+
+/// Build a list of markdown links, accumulating lines until we approach the char budget.
+/// This avoids truncating in the middle of a `[label](url)` markdown link.
+fn build_link_lines(links: Vec<(String, String)>, budget: usize) -> String {
+    let mut result = String::new();
+    for (i, (label, url)) in links.into_iter().enumerate() {
+        let label = truncate(&label, 60);
+        let line = if result.is_empty() {
+            format!("{}. [{}]({})", i + 1, label, url)
+        } else {
+            format!("\n{}. [{}]({})", i + 1, label, url)
+        };
+        if result.len() + line.len() > budget {
+            if result.is_empty() {
+                // At least show one truncated URL
+                result = truncate(&line, budget);
+            }
+            break;
+        }
+        result.push_str(&line);
+    }
+    result
 }
 
 // ── Core Logic ──
@@ -222,6 +250,13 @@ async fn fetch_attachment_detail(
     }
 }
 
+/// Discord embed limits
+const LIMIT_TITLE: usize = 256;
+const LIMIT_DESCRIPTION: usize = 4096;
+const LIMIT_FIELD_VALUE: usize = 1024;
+const LIMIT_FOOTER: usize = 2048;
+const LIMIT_EMBED_TOTAL: usize = 6000;
+
 fn build_discord_payload(
     detail: &EmailDetail,
     attachment_details: &[(Attachment, Option<AttachmentDetail>)],
@@ -234,6 +269,9 @@ fn build_discord_payload(
         .as_ref()
         .map(|v| v.join(", "))
         .unwrap_or_else(|| "Unknown".to_string());
+
+    let title = truncate(subject, LIMIT_TITLE);
+    let footer_text = truncate(&format!("Email ID: {}", detail.id), LIMIT_FOOTER);
 
     // Body: prefer text, fallback to stripped HTML
     let body_raw = detail
@@ -248,18 +286,17 @@ fn build_discord_payload(
                 .map(strip_html)
                 .unwrap_or_else(|| "(No Body)".to_string())
         });
-    let body = truncate(body_raw.trim(), 4000);
 
     // Fields
     let mut fields = vec![
         EmbedField {
             name: "From".to_string(),
-            value: from.to_string(),
+            value: truncate_field(from),
             inline: Some(true),
         },
         EmbedField {
             name: "To".to_string(),
-            value: to,
+            value: truncate_field(&to),
             inline: Some(true),
         },
     ];
@@ -268,7 +305,7 @@ fn build_discord_payload(
         if !cc.is_empty() {
             fields.push(EmbedField {
                 name: "CC".to_string(),
-                value: cc.join(", "),
+                value: truncate_field(&cc.join(", ")),
                 inline: Some(true),
             });
         }
@@ -277,7 +314,7 @@ fn build_discord_payload(
         if !bcc.is_empty() {
             fields.push(EmbedField {
                 name: "BCC".to_string(),
-                value: bcc.join(", "),
+                value: truncate_field(&bcc.join(", ")),
                 inline: Some(true),
             });
         }
@@ -285,69 +322,87 @@ fn build_discord_payload(
 
     // Attachments
     if !attachment_details.is_empty() {
-        let att_lines: Vec<String> = attachment_details
-            .iter()
-            .map(|(att, detail_opt)| {
-                let name = att.filename.as_deref().unwrap_or("unnamed");
-                let ctype = att.content_type.as_deref().unwrap_or("unknown");
-                if let Some(d) = detail_opt {
-                    let size = d
-                        .size
-                        .map(format_size)
-                        .unwrap_or_else(|| "?".to_string());
-                    if let Some(url) = &d.download_url {
-                        format!("[{name}]({url}) ({ctype}, {size})")
-                    } else {
-                        format!("{name} ({ctype}, {size})")
-                    }
+        let mut att_text = String::new();
+        for (att, detail_opt) in attachment_details {
+            let name = att.filename.as_deref().unwrap_or("unnamed");
+            let ctype = att.content_type.as_deref().unwrap_or("unknown");
+            let line = if let Some(d) = detail_opt {
+                let size = d
+                    .size
+                    .map(format_size)
+                    .unwrap_or_else(|| "?".to_string());
+                if let Some(url) = &d.download_url {
+                    format!("[{name}]({url}) ({ctype}, {size})")
                 } else {
-                    format!("{name} ({ctype})")
+                    format!("{name} ({ctype}, {size})")
                 }
-            })
-            .collect();
+            } else {
+                format!("{name} ({ctype})")
+            };
+            let next = if att_text.is_empty() {
+                line
+            } else {
+                format!("\n{line}")
+            };
+            if att_text.len() + next.len() > LIMIT_FIELD_VALUE {
+                break;
+            }
+            att_text.push_str(&next);
+        }
 
-        fields.push(EmbedField {
-            name: "Attachments".to_string(),
-            value: att_lines.join("\n"),
-            inline: Some(false),
-        });
+        if !att_text.is_empty() {
+            fields.push(EmbedField {
+                name: "Attachments".to_string(),
+                value: att_text,
+                inline: Some(false),
+            });
+        }
     }
 
     // Raw email link
     if let Some(url) = raw_url {
-        fields.push(EmbedField {
-            name: "Raw Email".to_string(),
-            value: format!("[Open Raw Email]({url})"),
-            inline: Some(false),
-        });
+        let value = format!("[Open Raw Email]({url})");
+        if value.len() <= LIMIT_FIELD_VALUE {
+            fields.push(EmbedField {
+                name: "Raw Email".to_string(),
+                value,
+                inline: Some(false),
+            });
+        }
     }
 
     // Extract links from HTML body and display as markdown links
     if let Some(html) = &detail.html {
         let links = extract_links(html);
         if !links.is_empty() {
-            let link_lines: Vec<String> = links
-                .into_iter()
-                .take(20)
-                .enumerate()
-                .map(|(i, (label, url))| format!("{}. [{}]({})", i + 1, label, url))
-                .collect();
-            let link_text = truncate(&link_lines.join("\n"), 1024);
-            fields.push(EmbedField {
-                name: "Links".to_string(),
-                value: link_text,
-                inline: Some(false),
-            });
+            let link_text = build_link_lines(links, LIMIT_FIELD_VALUE);
+            if !link_text.is_empty() {
+                fields.push(EmbedField {
+                    name: "Links".to_string(),
+                    value: link_text,
+                    inline: Some(false),
+                });
+            }
         }
     }
 
+    // Calculate total chars used by non-description parts, then cap description to fit 6000 total
+    let fixed_chars: usize = title.chars().count()
+        + footer_text.chars().count()
+        + fields
+            .iter()
+            .map(|f| f.name.chars().count() + f.value.chars().count())
+            .sum::<usize>();
+    let description_budget = LIMIT_EMBED_TOTAL.saturating_sub(fixed_chars).min(LIMIT_DESCRIPTION);
+    let description = truncate(body_raw.trim(), description_budget);
+
     let embed = DiscordEmbed {
-        title: Some(truncate(subject, 256)),
-        description: Some(body),
+        title: Some(title),
+        description: Some(description),
         color: Some(0x6C47FF),
         fields,
         footer: Some(EmbedFooter {
-            text: format!("Email ID: {}", detail.id),
+            text: footer_text,
         }),
     };
 
