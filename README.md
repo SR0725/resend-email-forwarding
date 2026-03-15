@@ -1,50 +1,52 @@
 # Resend Email Forwarding to Discord
 
+輕量級 Rust 服務，透過 [Resend](https://resend.com) Webhook 接收轉寄的電子郵件，並自動轉發至 Discord 頻道。
+
 A lightweight Rust service that receives inbound emails via [Resend](https://resend.com) webhooks and forwards them to a Discord channel through Discord Webhooks.
 
-## Features
+## 功能特色 / Features
 
-- Receives Resend `email.received` webhook events
-- Fetches full email content (subject, body, attachments) via Resend API
-- Forwards to Discord as a rich Embed message, including:
-  - **Subject** - displayed as embed title
-  - **Body** - plain text content (HTML is automatically stripped)
-  - **From / To / CC / BCC** - shown as inline fields
-  - **Attachments** - file name, type, size, and download link
-  - **Open Raw Email** - button to view the original email
-  - **Extracted Links** - all links in the email body are displayed as clickable Discord buttons
-- Health check endpoint at `GET /health`
-- Docker support for easy deployment
+- 接收 Resend `email.received` webhook 事件
+- 透過 Resend API 取得完整郵件內容（主旨、內文、附件）
+- 以 Discord Rich Embed 訊息轉發，包含：
+  - **主旨 (Subject)** — 顯示為 Embed 標題
+  - **內文 (Body)** — 純文字內容（自動去除 HTML 標籤，最多 4000 字）
+  - **寄件者 / 收件者 / CC / BCC** — 以 inline fields 呈現
+  - **附件 (Attachments)** — 檔名、類型、大小與下載連結
+  - **開啟原始郵件 (Open Raw Email)** — 按鈕連結至原始郵件
+  - **提取連結 (Extracted Links)** — 自動擷取郵件中所有連結，以 Discord 按鈕呈現
+- 健康檢查端點 `GET /health`
+- 支援 Docker 部署
 
-## Architecture
+## 架構 / Architecture
 
 ```
-Sender ──> Resend Inbound Email
+寄件者 ──> Resend 收信 (Inbound Email)
                │
                ▼
-         POST /webhook  (this service)
+         POST /webhook（本服務）
                │
-               ├─ GET /emails/receiving/{id}              ← fetch full email
-               ├─ GET /emails/receiving/{id}/attachments   ← fetch attachment details
+               ├─ GET /emails/receiving/{id}              ← 取得完整郵件內容
+               ├─ GET /emails/receiving/{id}/attachments   ← 取得附件詳細資訊
                │
                ▼
-         Discord Webhook ──> Discord Channel
+         Discord Webhook ──> Discord 頻道
 ```
 
-The Resend webhook payload only contains metadata (email ID, subject, from/to). The service makes additional API calls to retrieve the full email body and attachment download URLs before composing the Discord message.
+Resend Webhook 的 payload 僅包含 metadata（email ID、主旨、寄收件者等）。本服務會額外呼叫 Resend API 取得完整的郵件內文與附件下載連結，再組合成 Discord 訊息發送。
 
-## Prerequisites
+## 前置需求 / Prerequisites
 
-- [Rust](https://rustup.rs/) 1.85+ (edition 2024)
-- A [Resend](https://resend.com) account with:
-  - A receiving domain (or Resend-managed `@*.resend.app` address)
-  - An API key with permission to read inbound emails
-  - A webhook configured to send `email.received` events to your endpoint
-- A [Discord Webhook URL](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks)
+- [Rust](https://rustup.rs/) 1.85+（edition 2024）
+- 一個 [Resend](https://resend.com) 帳號，並完成以下設定：
+  - 設定接收網域（或使用 Resend 託管的 `@*.resend.app` 地址）
+  - 取得具有讀取 inbound email 權限的 API Key
+  - 在 Dashboard 建立 Webhook，訂閱 `email.received` 事件
+- 一個 [Discord Webhook URL](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks)
 
-## Quick Start
+## 快速開始 / Quick Start
 
-### 1. Clone and configure
+### 1. Clone 並設定環境變數
 
 ```bash
 git clone <repo-url>
@@ -52,7 +54,7 @@ cd resend-email-forwarding
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+編輯 `.env`，填入你的憑證：
 
 ```env
 RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
@@ -60,32 +62,32 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxxx/xxxx
 PORT=3000
 ```
 
-### 2. Run locally
+### 2. 本地執行
 
 ```bash
-# Load environment variables
+# 載入環境變數
 export $(cat .env | xargs)
 
-# Build and run
+# 編譯並執行
 cargo run --release
 ```
 
-The server will start on `http://0.0.0.0:3000`.
+服務將啟動於 `http://0.0.0.0:3000`。
 
-### 3. Configure Resend Webhook
+### 3. 設定 Resend Webhook
 
-1. Go to [Resend Dashboard](https://resend.com/webhooks) > Webhooks
-2. Add a new webhook endpoint: `https://your-domain.com/webhook`
-3. Select the **email.received** event
-4. Save
+1. 前往 [Resend Dashboard](https://resend.com/webhooks) > Webhooks
+2. 新增 Webhook 端點：`https://your-domain.com/webhook`
+3. 勾選 **email.received** 事件
+4. 儲存
 
-## Docker
-
-### Build and run
+## Docker 部署
 
 ```bash
+# 建置映像
 docker build -t resend-email-forwarding .
 
+# 執行容器
 docker run -d \
   -e RESEND_API_KEY=re_xxxxxxxxxxxxxxxx \
   -e DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxxx/xxxx \
@@ -94,16 +96,16 @@ docker run -d \
   resend-email-forwarding
 ```
 
-## Discord Message Format
+## Discord 訊息格式 / Message Format
 
-Each forwarded email appears in Discord as:
+每封轉發的郵件在 Discord 中的呈現方式：
 
 ```
 ┌─────────────────────────────────────────┐
-│  Subject Line Here                      │
+│  郵件主旨 Subject Line Here             │
 │                                         │
-│  Email body content displayed as        │
-│  plain text (up to 4000 chars)...       │
+│  郵件內文以純文字顯示                      │
+│  （最多 4000 字元）...                    │
 │                                         │
 │  From: sender@example.com  │ To: you@…  │
 │  CC: other@example.com                  │
@@ -113,28 +115,28 @@ Each forwarded email appears in Discord as:
 │                                         │
 │  Email ID: xxxxxxxx-xxxx-xxxx-xxxx      │
 ├─────────────────────────────────────────┤
-│ [Open Raw Email] [Link 1] [Link 2] ... │
+│ [Open Raw Email] [連結1] [連結2] ...     │
 └─────────────────────────────────────────┘
 ```
 
-- Links extracted from the email HTML are displayed as clickable buttons (up to 25 buttons, 5 per row)
-- Attachment download links are clickable in the embed field
+- 從郵件 HTML 中提取的連結會以可點擊的按鈕顯示（最多 25 個按鈕，每列 5 個）
+- 附件下載連結可直接在 Embed 欄位中點擊
 
-## Environment Variables
+## 環境變數 / Environment Variables
 
-| Variable | Required | Default | Description |
+| 變數 | 必填 | 預設值 | 說明 |
 |---|---|---|---|
-| `RESEND_API_KEY` | Yes | - | Resend API key for fetching email details |
-| `DISCORD_WEBHOOK_URL` | Yes | - | Discord webhook URL for the target channel |
-| `PORT` | No | `3000` | HTTP server port |
-| `RUST_LOG` | No | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `RESEND_API_KEY` | 是 | - | Resend API Key，用於取得郵件詳細內容 |
+| `DISCORD_WEBHOOK_URL` | 是 | - | Discord Webhook URL，指向目標頻道 |
+| `PORT` | 否 | `3000` | HTTP 伺服器埠號 |
+| `RUST_LOG` | 否 | `info` | 日誌等級（`debug`、`info`、`warn`、`error`） |
 
-## API Endpoints
+## API 端點 / Endpoints
 
-| Method | Path | Description |
+| 方法 | 路徑 | 說明 |
 |---|---|---|
-| `POST` | `/webhook` | Receives Resend webhook events |
-| `GET` | `/health` | Health check (returns `OK`) |
+| `POST` | `/webhook` | 接收 Resend Webhook 事件 |
+| `GET` | `/health` | 健康檢查（回傳 `OK`） |
 
 ## License
 
