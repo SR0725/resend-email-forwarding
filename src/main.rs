@@ -1,8 +1,7 @@
 use axum::{
     Router,
-    extract::{Json, Path},
+    extract::Json,
     http::StatusCode,
-    response::Html,
     routing::{get, post},
 };
 use regex::Regex;
@@ -90,7 +89,6 @@ struct EmbedFooter {
 struct Config {
     resend_api_key: String,
     discord_webhook_url: String,
-    base_url: String,
     port: u16,
 }
 
@@ -100,8 +98,6 @@ impl Config {
             resend_api_key: env::var("RESEND_API_KEY").expect("RESEND_API_KEY is required"),
             discord_webhook_url: env::var("DISCORD_WEBHOOK_URL")
                 .expect("DISCORD_WEBHOOK_URL is required"),
-            base_url: env::var("BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             port: env::var("PORT")
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
@@ -263,7 +259,6 @@ const LIMIT_EMBED_TOTAL: usize = 6000;
 fn build_discord_payload(
     detail: &EmailDetail,
     attachment_details: &[(Attachment, Option<AttachmentDetail>)],
-    base_url: &str,
 ) -> DiscordWebhook {
     let subject = detail.subject.as_deref().unwrap_or("(No Subject)");
     let from = detail.from.as_deref().unwrap_or("Unknown");
@@ -362,11 +357,11 @@ fn build_discord_payload(
         }
     }
 
-    // Open email in browser link
-    let viewer_url = format!("{}/email/{}", base_url.trim_end_matches('/'), detail.id);
+    // Open email on Resend Dashboard
+    let resend_url = format!("https://resend.com/emails/{}", detail.id);
     fields.push(EmbedField {
         name: "Open Email".to_string(),
-        value: format!("[在瀏覽器中查看完整郵件]({viewer_url})"),
+        value: format!("[在 Resend 查看完整郵件]({resend_url})"),
         inline: Some(false),
     });
 
@@ -475,7 +470,7 @@ async fn handle_webhook(Json(event): Json<WebhookEvent>) -> StatusCode {
     }
 
     // Step 3: Build and send Discord message
-    let payload = build_discord_payload(&detail, &attachment_details, &config.base_url);
+    let payload = build_discord_payload(&detail, &attachment_details);
 
     if send_to_discord(&client, &config.discord_webhook_url, &payload).await {
         info!("Forwarded email {} to Discord", detail.id);
@@ -484,71 +479,6 @@ async fn handle_webhook(Json(event): Json<WebhookEvent>) -> StatusCode {
         warn!("Failed to forward email {} to Discord", detail.id);
         StatusCode::INTERNAL_SERVER_ERROR
     }
-}
-
-// ── Email Viewer ──
-
-async fn view_email(Path(email_id): Path<String>) -> Result<Html<String>, StatusCode> {
-    let config = Config::from_env();
-    let client = Client::new();
-
-    let detail = fetch_email_detail(&client, &config.resend_api_key, &email_id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    let subject = detail.subject.as_deref().unwrap_or("(No Subject)");
-    let from = detail.from.as_deref().unwrap_or("Unknown");
-    let to = detail
-        .to
-        .as_ref()
-        .map(|v| v.join(", "))
-        .unwrap_or_else(|| "Unknown".to_string());
-
-    let body_html = detail
-        .html
-        .as_deref()
-        .unwrap_or_else(|| {
-            detail.text.as_deref().unwrap_or("(No Content)")
-        });
-
-    let page = format!(
-        r#"<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{subject}</title>
-<style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; }}
-  .header {{ background: #6C47FF; color: white; padding: 24px; }}
-  .header h1 {{ font-size: 20px; margin-bottom: 12px; }}
-  .meta {{ font-size: 14px; opacity: 0.9; line-height: 1.6; }}
-  .meta strong {{ opacity: 1; }}
-  .body {{ background: white; margin: 16px; padding: 24px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow-x: auto; }}
-  .footer {{ text-align: center; padding: 16px; font-size: 12px; color: #999; }}
-</style>
-</head>
-<body>
-  <div class="header">
-    <h1>{subject}</h1>
-    <div class="meta">
-      <div><strong>From:</strong> {from}</div>
-      <div><strong>To:</strong> {to}</div>
-    </div>
-  </div>
-  <div class="body">{body_html}</div>
-  <div class="footer">Email ID: {email_id}</div>
-</body>
-</html>"#,
-        subject = subject,
-        from = from,
-        to = to,
-        body_html = body_html,
-        email_id = detail.id,
-    );
-
-    Ok(Html(page))
 }
 
 async fn health() -> &'static str {
@@ -569,7 +499,6 @@ async fn main() {
 
     let app = Router::new()
         .route("/webhook", post(handle_webhook))
-        .route("/email/{id}", get(view_email))
         .route("/health", get(health));
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
