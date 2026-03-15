@@ -61,8 +61,6 @@ struct AttachmentDetail {
 struct DiscordWebhook {
     content: Option<String>,
     embeds: Vec<DiscordEmbed>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    components: Option<Vec<ActionRow>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,22 +83,6 @@ struct EmbedField {
 #[derive(Debug, Serialize)]
 struct EmbedFooter {
     text: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ActionRow {
-    #[serde(rename = "type")]
-    component_type: u8,
-    components: Vec<ButtonComponent>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct ButtonComponent {
-    #[serde(rename = "type")]
-    component_type: u8,
-    style: u8,
-    label: String,
-    url: String,
 }
 
 // ── Config ──
@@ -331,6 +313,34 @@ fn build_discord_payload(
         });
     }
 
+    // Raw email link
+    if let Some(url) = raw_url {
+        fields.push(EmbedField {
+            name: "Raw Email".to_string(),
+            value: format!("[Open Raw Email]({url})"),
+            inline: Some(false),
+        });
+    }
+
+    // Extract links from HTML body and display as markdown links
+    if let Some(html) = &detail.html {
+        let links = extract_links(html);
+        if !links.is_empty() {
+            let link_lines: Vec<String> = links
+                .into_iter()
+                .take(20)
+                .enumerate()
+                .map(|(i, (label, url))| format!("{}. [{}]({})", i + 1, label, url))
+                .collect();
+            let link_text = truncate(&link_lines.join("\n"), 1024);
+            fields.push(EmbedField {
+                name: "Links".to_string(),
+                value: link_text,
+                inline: Some(false),
+            });
+        }
+    }
+
     let embed = DiscordEmbed {
         title: Some(truncate(subject, 256)),
         description: Some(body),
@@ -341,54 +351,9 @@ fn build_discord_payload(
         }),
     };
 
-    // Build link buttons
-    let mut buttons: Vec<ButtonComponent> = Vec::new();
-
-    // "Open Raw Email" button
-    if let Some(url) = raw_url {
-        buttons.push(ButtonComponent {
-            component_type: 2,
-            style: 5, // Link style
-            label: "Open Raw Email".to_string(),
-            url: url.to_string(),
-        });
-    }
-
-    // Extract links from HTML body and add as buttons
-    if let Some(html) = &detail.html {
-        let links = extract_links(html);
-        for (label, url) in links {
-            if buttons.len() >= 25 {
-                break;
-            }
-            buttons.push(ButtonComponent {
-                component_type: 2,
-                style: 5,
-                label: truncate(&label, 80),
-                url,
-            });
-        }
-    }
-
-    // Organize buttons into action rows (max 5 per row, max 5 rows)
-    let components = if buttons.is_empty() {
-        None
-    } else {
-        let rows: Vec<ActionRow> = buttons
-            .chunks(5)
-            .take(5)
-            .map(|chunk| ActionRow {
-                component_type: 1,
-                components: chunk.to_vec(),
-            })
-            .collect();
-        Some(rows)
-    };
-
     DiscordWebhook {
         content: None,
         embeds: vec![embed],
-        components,
     }
 }
 
